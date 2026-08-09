@@ -74,7 +74,14 @@ python3 argentina_wallpapers.py --list-sources
 | `--limit N` | Maximum number of **new** images to download/process. |
 | `--interval {5min,15min,30min,1h,1d}` | Rotation interval hint used in setup + scheduling output. |
 | `--category NAME` | Wikimedia Commons category (repeatable; overrides the seed list). |
+| `--depth N` | Subcategory recursion depth (default 1; 0 = direct files only). |
 | `--list-sources` | Print configured categories/hosts and exit. |
+
+Each seed category is crawled **recursively into its subcategories** (default
+one level), so a collection like *Buenos Aires in the 19th century* automatically
+pulls its per-decade subcategories, and the AGN categories pull their photo fonds
+(Caras y Caretas, etc.). Use `--depth 2` for deeper collections or `--depth 0` to
+stay in the named category only.
 
 ## 3. Change the wallpaper interval
 
@@ -129,12 +136,27 @@ Only files with an accepted free license (public domain / CC0 / CC BY) and a
 long edge of at least `MIN_LONG_EDGE` px are used. Downloads from any host not in
 `ALLOWED_HOSTS` are refused by design.
 
-Seed categories:
+Seed categories (each recursed into its subcategories):
 
+**Archivo General de la Nación**
 - `Files provided by Archivo General de la Nación Argentina`
 - `Images from Archivo General de la Nación Argentina`
-- `Colección Witcomb`
+
+**Historic photographic studios / photographers**
+- `Colección Witcomb` · `Witcomb (photographic studio)` · `Alexander Witcomb`
+- `Photographs by Christiano Junior` (pioneer 1860s–70s photographer)
+- `Views of the City of Buenos Aires commissioned by the Buenos Aires Municipality (Boote, Croce, et al.)`
+
+**Provincial / regional historical imagery**
+- `Buenos Aires in the 19th century` (recurses per-decade + La Plata subcats)
 - `Black and white photographs of Argentina`
+
+> Note on provincial archives: dedicated provincial-archive categories
+> (Santa Fe, Córdoba, Mendoza, …) are largely unpopulated on Commons today.
+> Regional coverage therefore comes via place/era categories such as
+> *Buenos Aires in the 19th century* and *Black and white photographs of La Plata*
+> (auto-discovered by recursion). Add a `--category "…"` when a provincial
+> archive publishes a populated Commons category.
 
 ## 5. Attribution requirements
 

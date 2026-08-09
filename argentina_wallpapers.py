@@ -76,9 +76,24 @@ COMMONS_API = "https://commons.wikimedia.org/w/api.php"
 DEFAULT_CATEGORIES = [
     "Files provided by Archivo General de la Nación Argentina",
     "Images from Archivo General de la Nación Argentina",
-    "Colección Witcomb",                      # historic Witcomb studio, held by AGN
+    # --- historic Argentine photographic studios / collections ---
+    "Colección Witcomb",                       # Witcomb studio collection, held by AGN
+    "Witcomb (photographic studio)",           # Witcomb studio (nested subcats)
+    "Alexander Witcomb",                        # founder; portrait/city plates
+    "Photographs by Christiano Junior",        # pioneer 1860s–70s Argentine photographer
+    "Views of the City of Buenos Aires commissioned by the Buenos Aires Municipality (Boote, Croce, et al.)",
+    # --- provincial / regional historical imagery (recursed for depth) ---
+    "Buenos Aires in the 19th century",
     "Black and white photographs of Argentina",  # broader public-domain historical B&W
 ]
+
+# How many levels of subcategories to descend from each seed category.
+# 0 = only files directly in the category; 1 = also its subcategories, etc.
+# Overridable with --depth.
+DEFAULT_DEPTH = 1
+
+# Hard cap on total categories visited per run (loop / runaway guard).
+MAX_CATEGORIES_VISITED = 300
 
 # Allow-list of hostnames we will download from. Anything else is refused.
 ALLOWED_HOSTS = {
@@ -239,7 +254,7 @@ def fetch_category_files(
                 val = _clean_html(em.get(key, {}).get("value"))
                 if val and val.lower() != "unknown author":
                     credit_parts.append(val)
-            credit = " / ".join(dict.fromkeys(credit_parts)) or "Archivo General de la Nación Argentina"
+            credit = " / ".join(dict.fromkeys(credit_parts)) or "Unknown author (via Wikimedia Commons)"
 
             desc = _clean_html(em.get("ImageDescription", {}).get("value"))
             date = _clean_html(em.get("DateTimeOriginal", {}).get("value"))
@@ -260,6 +275,62 @@ def fetch_category_files(
         cont = data.get("continue", {})
         if not cont or len(candidates) >= batch_limit:
             break
+    return candidates
+
+
+def fetch_subcategories(session: requests.Session, category: str) -> list[str]:
+    """Return the immediate subcategory names (without the 'Category:' prefix)."""
+    title = category if category.lower().startswith("category:") else f"Category:{category}"
+    params = {
+        "action": "query", "format": "json",
+        "list": "categorymembers", "cmtitle": title,
+        "cmtype": "subcat", "cmlimit": "500",
+    }
+    subs: list[str] = []
+    cont: dict = {}
+    while True:
+        try:
+            r = session.get(COMMONS_API, params={**params, **cont}, timeout=REQUEST_TIMEOUT)
+            r.raise_for_status()
+            data = r.json()
+        except (requests.RequestException, json.JSONDecodeError) as exc:
+            print(f"[warn] subcategory query failed for '{category}': {exc}")
+            break
+        for m in data.get("query", {}).get("categorymembers", []):
+            subs.append(re.sub(r"^Category:", "", m.get("title", "")))
+        cont = data.get("continue", {})
+        if not cont:
+            break
+    return subs
+
+
+def fetch_category_recursive(
+    session: requests.Session,
+    category: str,
+    depth: int,
+    batch_limit: int,
+    visited: set[str],
+) -> list[ImageCandidate]:
+    """Collect candidates from a category and its subcategories up to `depth`.
+
+    A shared `visited` set guards against category cycles and re-visits, and the
+    global MAX_CATEGORIES_VISITED cap bounds a runaway crawl.
+    """
+    if category in visited or len(visited) >= MAX_CATEGORIES_VISITED:
+        return []
+    visited.add(category)
+
+    candidates = fetch_category_files(session, category, batch_limit)
+    print(f"[info] {len(candidates):3} usable file(s) from '{category}'"
+          + (f" (depth {depth})" if depth else ""))
+
+    if depth > 0:
+        for sub in fetch_subcategories(session, category):
+            if len(visited) >= MAX_CATEGORIES_VISITED:
+                break
+            candidates.extend(
+                fetch_category_recursive(session, sub, depth - 1, batch_limit, visited)
+            )
     return candidates
 
 
@@ -481,17 +552,21 @@ def print_launchd_hint(interval: str | None) -> None:
 
 
 def gather_candidates(
-    session: requests.Session, categories: list[str], batch_limit: int
+    session: requests.Session, categories: list[str], depth: int, batch_limit: int
 ) -> list[ImageCandidate]:
     candidates: list[ImageCandidate] = []
     seen_titles: set[str] = set()
+    visited: set[str] = set()
     for cat in categories:
-        found = fetch_category_files(session, cat, batch_limit)
-        print(f"[info] {len(found)} usable file(s) from category '{cat}'")
+        found = fetch_category_recursive(session, cat, depth, batch_limit, visited)
         for c in found:
             if c.page_title not in seen_titles:
                 seen_titles.add(c.page_title)
                 candidates.append(c)
+        # Stop crawling further seed categories once we have a comfortable pool;
+        # keeps a small --limit run from touching every seed + subcategory.
+        if len(candidates) >= batch_limit:
+            break
     return candidates
 
 
@@ -501,11 +576,12 @@ def run(args: argparse.Namespace) -> int:
     session = make_session()
 
     categories = list(args.category) if args.category else list(DEFAULT_CATEGORIES)
+    depth = args.depth if args.depth is not None else DEFAULT_DEPTH
     target_w, target_h = detect_display_resolution()
 
     # Fetch a generous batch so we still reach --limit after dedup/filtering.
     batch = (args.limit * 4) if args.limit else 200
-    candidates = gather_candidates(session, categories, batch)
+    candidates = gather_candidates(session, categories, depth, batch)
     print(f"[info] {len(candidates)} unique candidate image(s) after merge")
 
     processed_count = 0
@@ -540,6 +616,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--category", action="append", metavar="NAME",
                    help="Wikimedia Commons category name (repeatable). Overrides "
                         "the built-in seed list.")
+    p.add_argument("--depth", type=int, default=None, metavar="N",
+                   help=f"Subcategory recursion depth (default {DEFAULT_DEPTH}). "
+                        "0 = only files directly in each category.")
     p.add_argument("--list-sources", action="store_true",
                    help="Print configured categories and allowed hosts, then exit.")
     return p
@@ -549,7 +628,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
     if args.list_sources:
-        print("Seed Commons categories:")
+        print(f"Seed Commons categories (recursed to depth {DEFAULT_DEPTH}):")
         for c in DEFAULT_CATEGORIES:
             print(f"  {c}")
         print("Allowed hosts:")
