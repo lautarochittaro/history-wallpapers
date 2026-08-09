@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# macOS
+.DS_Store
+
+# Local agent/editor state
+.claude/
+
+# Runtime output (wallpapers live in ~/Pictures, not the repo)
+processed/
+raw/
+state.json
