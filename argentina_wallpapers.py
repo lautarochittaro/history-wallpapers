@@ -236,6 +236,12 @@ def fetch_category_files(
             info = (page.get("imageinfo") or [None])[0]
             if not info:
                 continue
+            page_title = page.get("title", "")
+            # Skip the "reverso" (back of the card) scans in AGN photo fonds — the
+            # "_R" side is the blank/annotated back, useless as a wallpaper; keep
+            # only the "_A" (anverso / front) image.
+            if re.search(r"_R\.[^.]+$", page_title):
+                continue
             url = info.get("url", "")
             if not url.lower().split("?")[0].endswith(RASTER_EXT):
                 continue
@@ -580,9 +586,19 @@ def run(args: argparse.Namespace) -> int:
     target_w, target_h = detect_display_resolution()
 
     # Fetch a generous batch so we still reach --limit after dedup/filtering.
-    batch = (args.limit * 4) if args.limit else 200
+    # --dry-run has no cap so it can report the full available pool.
+    if args.dry_run:
+        batch = 10_000
+    else:
+        batch = (args.limit * 4) if args.limit else 200
     candidates = gather_candidates(session, categories, depth, batch)
     print(f"[info] {len(candidates)} unique candidate image(s) after merge")
+
+    if args.dry_run:
+        new = [c for c in candidates if not state.seen_url(c.download_url)]
+        print(f"[dry-run] {len(candidates)} usable candidate(s) available, "
+              f"{len(new)} not yet downloaded. No files written.")
+        return 0
 
     processed_count = 0
     for cand in candidates:
@@ -619,6 +635,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--depth", type=int, default=None, metavar="N",
                    help=f"Subcategory recursion depth (default {DEFAULT_DEPTH}). "
                         "0 = only files directly in each category.")
+    p.add_argument("--dry-run", action="store_true",
+                   help="Count available/new candidates without downloading anything.")
     p.add_argument("--list-sources", action="store_true",
                    help="Print configured categories and allowed hosts, then exit.")
     return p
